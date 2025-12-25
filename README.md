@@ -57,6 +57,8 @@ python main.py
 python build.py
 ```
 
+版本号由 `VERSION` 文件控制，打包与窗口标题会自动读取该版本。
+
 产物位置：
 
 - 构建中间文件：`build/`

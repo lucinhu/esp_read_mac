@@ -1,4 +1,5 @@
 import datetime
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
@@ -63,9 +64,11 @@ def read_mac_via_esptool(port: str) -> tuple[str, str]:
 
 
 class MainFrame(wx.Frame):
-    def __init__(self) -> None:
-        super().__init__(None, title="ESP32 MAC 监测工具", size=(860, 520))
+    def __init__(self, version: str) -> None:
+        title = f"ESP32 MAC 监测工具 v{version}"
+        super().__init__(None, title=title, size=(860, 520))
         panel = wx.Panel(self)
+        self.version = version
 
         self.start_button = wx.Button(panel, label="开始")
         self.stop_button = wx.Button(panel, label="停止")
@@ -77,8 +80,10 @@ class MainFrame(wx.Frame):
         self.search_input.SetHint("搜索：串口 / MAC / 状态")
         self.status_filter = wx.Choice(panel, choices=["全部", "成功", "失败"])
         self.status_filter.SetSelection(0)
-        self.status_bar = self.CreateStatusBar(1)
-        self.status_bar.SetStatusText("空闲")
+        self.status_bar = self.CreateStatusBar(2)
+        self.status_bar.SetStatusWidths([-1, 140])
+        self.status_bar.SetStatusText("空闲", 0)
+        self.status_bar.SetStatusText(f"v{version}", 1)
 
         self.list_ctrl = wx.ListCtrl(
             panel,
@@ -146,14 +151,14 @@ class MainFrame(wx.Frame):
         self.status_filter.Bind(wx.EVT_CHOICE, self.apply_filters)
 
     def start_monitoring(self, _event: wx.CommandEvent) -> None:
-        self.status_bar.SetStatusText("监测中...")
+        self.status_bar.SetStatusText("监测中...", 0)
         self.start_button.Disable()
         self.stop_button.Enable()
         self.timer.Start(1000)
 
     def stop_monitoring(self, _event: wx.CommandEvent) -> None:
         self.timer.Stop()
-        self.status_bar.SetStatusText("已停止")
+        self.status_bar.SetStatusText("已停止", 0)
         self.start_button.Enable()
         self.stop_button.Disable()
 
@@ -273,9 +278,21 @@ class MainFrame(wx.Frame):
         return super().Destroy()
 
 
+def load_version() -> str:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    version_path = os.path.join(base_dir, "VERSION")
+    try:
+        with open(version_path, "r", encoding="utf-8") as handle:
+            version = handle.readline().strip()
+            return version or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
 def main() -> None:
+    version = load_version()
     app = wx.App()
-    frame = MainFrame()
+    frame = MainFrame(version)
     frame.Show()
     app.MainLoop()
 

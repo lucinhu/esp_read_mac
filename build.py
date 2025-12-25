@@ -11,9 +11,20 @@ def run(cmd: list[str]) -> None:
         raise SystemExit(completed.returncode)
 
 
+def read_version(project_root: str) -> str:
+    path = os.path.join(project_root, "VERSION")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            version = handle.readline().strip()
+            return version or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
 def main() -> None:
     project_root = os.path.dirname(os.path.abspath(__file__))
-    build_root = os.path.join(project_root, "build")
+    version = read_version(project_root)
+    build_root = os.path.join(project_root, "build", version)
     dist_dir = os.path.join(build_root, "dist")
     work_dir = os.path.join(build_root, "work")
     spec_dir = os.path.join(build_root, "spec")
@@ -54,7 +65,7 @@ def main() -> None:
     src = os.path.join(dist_dir, f"esp32_mac_monitor{suffix}")
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     dst = os.path.join(
-        bin_dir, f"esp32_mac_monitor_{timestamp}{suffix}"
+        bin_dir, f"esp32_mac_monitor_v{version}_{timestamp}{suffix}"
     )
     shutil.copy2(src, dst)
 
