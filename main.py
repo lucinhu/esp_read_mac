@@ -316,13 +316,22 @@ class MainFrame(wx.Frame):
 
 def load_version() -> str:
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    version_path = os.path.join(base_dir, "VERSION")
+    meipass = getattr(sys, "_MEIPASS", None)
+    candidates = [base_dir]
+    if meipass:
+        candidates.insert(0, meipass)
     try:
-        with open(version_path, "r", encoding="utf-8") as handle:
-            version = handle.readline().strip()
-            return version or "0.0.0"
+        for root in candidates:
+            version_path = os.path.join(root, "VERSION")
+            if not os.path.isfile(version_path):
+                continue
+            with open(version_path, "r", encoding="utf-8") as handle:
+                version = handle.readline().strip()
+                if version:
+                    return version
     except OSError:
-        return "0.0.0"
+        pass
+    return "0.0.0"
 
 
 def main() -> None:

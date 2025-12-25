@@ -20,6 +20,10 @@ def read_version(project_root: str) -> str:
     except OSError:
         return "0.0.0"
 
+def add_data_arg(source: str, target: str) -> str:
+    separator = ";" if sys.platform.startswith("win") else ":"
+    return f"{source}{separator}{target}"
+
 
 def main() -> None:
     project_root = os.path.dirname(os.path.abspath(__file__))
@@ -56,6 +60,8 @@ def main() -> None:
         "openpyxl",
         "--collect-all",
         "esptool",
+        "--add-data",
+        add_data_arg(os.path.join(project_root, "VERSION"), "."),
         os.path.join(project_root, "main.py"),
     ]
 
