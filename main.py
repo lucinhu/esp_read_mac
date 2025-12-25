@@ -73,6 +73,7 @@ class MainFrame(wx.Frame):
         self.start_button = wx.Button(panel, label="开始")
         self.stop_button = wx.Button(panel, label="停止")
         self.export_button = wx.Button(panel, label="导出 Excel")
+        self.export_mac_only_checkbox = wx.CheckBox(panel, label="仅导出 MAC")
         self.clear_button = wx.Button(panel, label="清除所有")
         self.remove_failed_button = wx.Button(panel, label="清除无用数据")
         self.dedup_button = wx.Button(panel, label="清除重复")
@@ -103,6 +104,7 @@ class MainFrame(wx.Frame):
         export_box = wx.StaticBox(panel, label="导出")
         export_sizer = wx.StaticBoxSizer(export_box, wx.HORIZONTAL)
         export_sizer.Add(self.export_button, 0, wx.ALL, 6)
+        export_sizer.Add(self.export_mac_only_checkbox, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 6)
 
         clean_box = wx.StaticBox(panel, label="清理")
         clean_sizer = wx.StaticBoxSizer(clean_box, wx.HORIZONTAL)
@@ -143,10 +145,13 @@ class MainFrame(wx.Frame):
         self.known_ports: set[str] = set()
         self.pending_ports: set[str] = set()
         self.rows: list[dict[str, str]] = []
+        self.export_mac_only = False
+        self.export_mac_only_checkbox.SetValue(self.export_mac_only)
 
         self.start_button.Bind(wx.EVT_BUTTON, self.start_monitoring)
         self.stop_button.Bind(wx.EVT_BUTTON, self.stop_monitoring)
         self.export_button.Bind(wx.EVT_BUTTON, self.export_excel)
+        self.export_mac_only_checkbox.Bind(wx.EVT_CHECKBOX, self.on_export_mac_only_toggle)
         self.clear_button.Bind(wx.EVT_BUTTON, self.clear_table)
         self.remove_failed_button.Bind(wx.EVT_BUTTON, self.remove_failed_rows)
         self.dedup_button.Bind(wx.EVT_BUTTON, self.remove_duplicate_rows)
@@ -258,6 +263,9 @@ class MainFrame(wx.Frame):
             wx.MessageBox("没有可导出的数据。", "导出", wx.OK | wx.ICON_INFORMATION)
             return
 
+        mac_only = self.export_mac_only_checkbox.IsChecked()
+        self.export_mac_only = mac_only
+
         dialog = wx.FileDialog(
             self,
             message="保存 Excel",
@@ -277,9 +285,16 @@ class MainFrame(wx.Frame):
         workbook = openpyxl.Workbook()
         sheet = workbook.active
         sheet.title = "ESP32 MAC"
-        sheet.append(["时间", "串口", "MAC", "状态"])
-        for row in self.rows:
-            sheet.append([row["time"], row["port"], row["mac"], row["status"]])
+        if mac_only:
+            for row in self.rows:
+                mac_value = row.get("mac", "")
+                if not mac_value:
+                    continue
+                sheet.append([mac_value])
+        else:
+            sheet.append(["时间", "串口", "MAC", "状态"])
+            for row in self.rows:
+                sheet.append([row["time"], row["port"], row["mac"], row["status"]])
 
         try:
             workbook.save(path)
@@ -288,6 +303,9 @@ class MainFrame(wx.Frame):
             return
 
         wx.MessageBox(f"已保存到: {path}", "导出", wx.OK | wx.ICON_INFORMATION)
+
+    def on_export_mac_only_toggle(self, _event: wx.CommandEvent) -> None:
+        self.export_mac_only = self.export_mac_only_checkbox.IsChecked()
 
     def Destroy(self) -> bool:  # noqa: N802
         if self.timer.IsRunning():
