@@ -75,6 +75,7 @@ class MainFrame(wx.Frame):
         self.export_button = wx.Button(panel, label="导出 Excel")
         self.clear_button = wx.Button(panel, label="清除所有")
         self.remove_failed_button = wx.Button(panel, label="清除无用数据")
+        self.dedup_button = wx.Button(panel, label="清除重复")
 
         self.search_input = wx.SearchCtrl(panel, style=wx.TE_PROCESS_ENTER)
         self.search_input.SetHint("搜索：串口 / MAC / 状态")
@@ -107,6 +108,7 @@ class MainFrame(wx.Frame):
         clean_sizer = wx.StaticBoxSizer(clean_box, wx.HORIZONTAL)
         clean_sizer.Add(self.clear_button, 0, wx.ALL, 6)
         clean_sizer.Add(self.remove_failed_button, 0, wx.ALL, 6)
+        clean_sizer.Add(self.dedup_button, 0, wx.ALL, 6)
 
         group_row = wx.BoxSizer(wx.HORIZONTAL)
         group_row.Add(monitor_sizer, 0, wx.RIGHT, 10)
@@ -147,6 +149,7 @@ class MainFrame(wx.Frame):
         self.export_button.Bind(wx.EVT_BUTTON, self.export_excel)
         self.clear_button.Bind(wx.EVT_BUTTON, self.clear_table)
         self.remove_failed_button.Bind(wx.EVT_BUTTON, self.remove_failed_rows)
+        self.dedup_button.Bind(wx.EVT_BUTTON, self.remove_duplicate_rows)
         self.search_input.Bind(wx.EVT_TEXT, self.apply_filters)
         self.status_filter.Bind(wx.EVT_CHOICE, self.apply_filters)
 
@@ -233,6 +236,21 @@ class MainFrame(wx.Frame):
 
     def remove_failed_rows(self, _event: wx.CommandEvent) -> None:
         self.rows = [row for row in self.rows if row["status"] == "ok"]
+        self.apply_filters()
+
+    def remove_duplicate_rows(self, _event: wx.CommandEvent) -> None:
+        seen: set[str] = set()
+        deduped: list[dict[str, str]] = []
+        for row in self.rows:
+            mac = row.get("mac", "")
+            if not mac:
+                deduped.append(row)
+                continue
+            if mac in seen:
+                continue
+            seen.add(mac)
+            deduped.append(row)
+        self.rows = deduped
         self.apply_filters()
 
     def export_excel(self, _event: wx.CommandEvent) -> None:
