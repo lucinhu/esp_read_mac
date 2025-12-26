@@ -2,9 +2,124 @@ import datetime
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import wx
 from serial.tools import list_ports
+
+
+def ensure_gtk_resources() -> None:
+    if not sys.platform.startswith("linux"):
+        return
+    if not getattr(sys, "frozen", False):
+        return
+    meipass = getattr(sys, "_MEIPASS", "")
+    if not meipass:
+        return
+    share_dir = os.path.join(meipass, "share")
+    if os.path.isdir(share_dir):
+        existing = os.environ.get("XDG_DATA_DIRS", "")
+        if existing:
+            os.environ["XDG_DATA_DIRS"] = f"{share_dir}:{existing}"
+        else:
+            os.environ["XDG_DATA_DIRS"] = share_dir
+
+
+def get_config_path() -> Path:
+    if sys.platform.startswith("win"):
+        root = os.environ.get("APPDATA", str(Path.home()))
+        return Path(root) / "esp32-mac-monitor" / "config.toml"
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "esp32-mac-monitor"
+            / "config.toml"
+        )
+    return Path.home() / ".config" / "esp32-mac-monitor" / "config.toml"
+
+
+def load_config() -> dict:
+    path = get_config_path()
+    try:
+        import tomllib
+    except Exception:
+        return {}
+    try:
+        with path.open("rb") as handle:
+            return tomllib.load(handle)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
+def save_config(data: dict) -> None:
+    path = get_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for key, value in data.items():
+        if isinstance(value, bool):
+            lines.append(f"{key} = {'true' if value else 'false'}")
+        elif isinstance(value, int):
+            lines.append(f"{key} = {value}")
+        elif isinstance(value, str):
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'{key} = "{escaped}"')
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def default_max_workers() -> int:
+    count = os.cpu_count() or 4
+    count = max(2, count)
+    gil_enabled = getattr(sys, "_is_gil_enabled", None)
+    if callable(gil_enabled) and not gil_enabled():
+        return min(16, count * 2)
+    return min(8, count)
+
+
+def make_check_bitmap(size: int, checked: bool) -> wx.Bitmap:
+    bmp = wx.Bitmap(size, size)
+    dc = wx.MemoryDC(bmp)
+    bg = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
+    dc.SetBackground(wx.Brush(bg))
+    dc.Clear()
+
+    border = wx.Colour(30, 136, 229) if checked else wx.Colour(156, 163, 175)
+    fill = wx.Colour(30, 136, 229) if checked else bg
+    dc.SetPen(wx.Pen(border, 1))
+    dc.SetBrush(wx.Brush(fill))
+    dc.DrawRoundedRectangle(1, 1, size - 2, size - 2, 2)
+
+    if checked:
+        dc.SetPen(wx.Pen(wx.Colour(255, 255, 255), 2))
+        dc.DrawLine(3, size // 2, size // 2, size - 4)
+        dc.DrawLine(size // 2 - 1, size - 4, size - 3, 3)
+
+    dc.SelectObject(wx.NullBitmap)
+    return bmp
+
+
+def make_arrow_bitmap(size: int) -> wx.Bitmap:
+    bmp = wx.Bitmap(size, size)
+    dc = wx.MemoryDC(bmp)
+    bg = wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW)
+    dc.SetBackground(wx.Brush(bg))
+    dc.Clear()
+
+    dc.SetPen(wx.Pen(wx.Colour(107, 114, 128), 1))
+    dc.SetBrush(wx.Brush(wx.Colour(107, 114, 128)))
+    center = size // 2
+    points = [
+        (center - 3, center - 1),
+        (center + 3, center - 1),
+        (center, center + 3),
+    ]
+    dc.DrawPolygon(points)
+
+    dc.SelectObject(wx.NullBitmap)
+    return bmp
 
 
 def format_mac(value: object) -> str:
@@ -69,19 +184,20 @@ class MainFrame(wx.Frame):
         super().__init__(None, title=title, size=(860, 520))
         panel = wx.Panel(self)
         self.version = version
+        self.config = load_config()
 
         self.start_button = wx.Button(panel, label="开始")
         self.stop_button = wx.Button(panel, label="停止")
         self.export_button = wx.Button(panel, label="导出 Excel")
-        self.export_mac_only_checkbox = wx.CheckBox(panel, label="仅导出 MAC")
         self.clear_button = wx.Button(panel, label="清除所有")
         self.remove_failed_button = wx.Button(panel, label="清除无用数据")
         self.dedup_button = wx.Button(panel, label="清除重复")
 
         self.search_input = wx.SearchCtrl(panel, style=wx.TE_PROCESS_ENTER)
         self.search_input.SetHint("搜索：串口 / MAC / 状态")
-        self.status_filter = wx.Choice(panel, choices=["全部", "成功", "失败"])
-        self.status_filter.SetSelection(0)
+        self.status_filter_value = "全部"
+        self.status_filter = wx.Button(panel, label=self.status_filter_label())
+        self.status_filter.SetMinSize((-1, -1))
         self.status_bar = self.CreateStatusBar(2)
         self.status_bar.SetStatusWidths([-1, 140])
         self.status_bar.SetStatusText("空闲", 0)
@@ -104,7 +220,10 @@ class MainFrame(wx.Frame):
         export_box = wx.StaticBox(panel, label="导出")
         export_sizer = wx.StaticBoxSizer(export_box, wx.HORIZONTAL)
         export_sizer.Add(self.export_button, 0, wx.ALL, 6)
-        export_sizer.Add(self.export_mac_only_checkbox, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 6)
+        self.export_mac_only_toggle = wx.ToggleButton(panel, label="仅导出 MAC")
+        export_sizer.Add(
+            self.export_mac_only_toggle, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 6
+        )
 
         clean_box = wx.StaticBox(panel, label="清理")
         clean_sizer = wx.StaticBoxSizer(clean_box, wx.HORIZONTAL)
@@ -141,24 +260,32 @@ class MainFrame(wx.Frame):
         self.timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.on_timer, self.timer)
 
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.executor = None
+        self.scan_inflight = False
         self.known_ports: set[str] = set()
         self.pending_ports: set[str] = set()
         self.rows: list[dict[str, str]] = []
-        self.export_mac_only = False
-        self.export_mac_only_checkbox.SetValue(self.export_mac_only)
+        self.export_mac_only = bool(self.config.get("export_mac_only", False))
+        self.export_mac_only_toggle.SetValue(self.export_mac_only)
+        self.update_export_toggle_label()
+        self.restore_status_filter()
+        self.init_custom_icons()
 
         self.start_button.Bind(wx.EVT_BUTTON, self.start_monitoring)
         self.stop_button.Bind(wx.EVT_BUTTON, self.stop_monitoring)
         self.export_button.Bind(wx.EVT_BUTTON, self.export_excel)
-        self.export_mac_only_checkbox.Bind(wx.EVT_CHECKBOX, self.on_export_mac_only_toggle)
+        self.status_filter.Bind(wx.EVT_BUTTON, self.show_status_menu)
+        self.export_mac_only_toggle.Bind(
+            wx.EVT_TOGGLEBUTTON, self.on_export_mac_only_toggle
+        )
         self.clear_button.Bind(wx.EVT_BUTTON, self.clear_table)
         self.remove_failed_button.Bind(wx.EVT_BUTTON, self.remove_failed_rows)
         self.dedup_button.Bind(wx.EVT_BUTTON, self.remove_duplicate_rows)
         self.search_input.Bind(wx.EVT_TEXT, self.apply_filters)
-        self.status_filter.Bind(wx.EVT_CHOICE, self.apply_filters)
+        self.Bind(wx.EVT_CLOSE, self.on_close)
 
     def start_monitoring(self, _event: wx.CommandEvent) -> None:
+        self.ensure_executor()
         self.status_bar.SetStatusText("监测中...", 0)
         self.start_button.Disable()
         self.stop_button.Enable()
@@ -171,7 +298,22 @@ class MainFrame(wx.Frame):
         self.stop_button.Disable()
 
     def on_timer(self, _event: wx.TimerEvent) -> None:
-        current_ports = {port.device for port in list_ports.comports()}
+        if self.scan_inflight:
+            return
+        self.scan_inflight = True
+        self.ensure_executor()
+        future = self.executor.submit(self.scan_ports)
+        future.add_done_callback(lambda fut: wx.CallAfter(self.on_scan_result, fut))
+
+    def scan_ports(self) -> set[str]:
+        return {port.device for port in list_ports.comports()}
+
+    def on_scan_result(self, future) -> None:
+        self.scan_inflight = False
+        try:
+            current_ports = future.result()
+        except Exception:
+            current_ports = set()
 
         removed = self.known_ports - current_ports
         for port in removed:
@@ -184,8 +326,9 @@ class MainFrame(wx.Frame):
             if port in self.pending_ports:
                 continue
             self.pending_ports.add(port)
-            future = self.executor.submit(read_mac_via_esptool, port)
-            future.add_done_callback(lambda fut, p=port: self.on_mac_result(p, fut))
+            self.ensure_executor()
+            task = self.executor.submit(read_mac_via_esptool, port)
+            task.add_done_callback(lambda fut, p=port: self.on_mac_result(p, fut))
 
     def on_mac_result(self, port: str, future) -> None:
         try:
@@ -212,7 +355,9 @@ class MainFrame(wx.Frame):
 
     def apply_filters(self, _event: wx.CommandEvent | None = None) -> None:
         query = self.search_input.GetValue().strip().lower()
-        status_choice = self.status_filter.GetStringSelection()
+        status_choice = self.status_filter_value
+        self.config["status_filter"] = status_choice
+        save_config(self.config)
 
         self.list_ctrl.Freeze()
         self.list_ctrl.DeleteAllItems()
@@ -263,8 +408,10 @@ class MainFrame(wx.Frame):
             wx.MessageBox("没有可导出的数据。", "导出", wx.OK | wx.ICON_INFORMATION)
             return
 
-        mac_only = self.export_mac_only_checkbox.IsChecked()
+        mac_only = self.export_mac_only_toggle.GetValue()
         self.export_mac_only = mac_only
+        self.config["export_mac_only"] = self.export_mac_only
+        save_config(self.config)
 
         dialog = wx.FileDialog(
             self,
@@ -275,6 +422,8 @@ class MainFrame(wx.Frame):
         if dialog.ShowModal() != wx.ID_OK:
             return
         path = dialog.GetPath()
+        if not path.lower().endswith(".xlsx"):
+            path = f"{path}.xlsx"
 
         try:
             import openpyxl
@@ -305,12 +454,72 @@ class MainFrame(wx.Frame):
         wx.MessageBox(f"已保存到: {path}", "导出", wx.OK | wx.ICON_INFORMATION)
 
     def on_export_mac_only_toggle(self, _event: wx.CommandEvent) -> None:
-        self.export_mac_only = self.export_mac_only_checkbox.IsChecked()
+        self.export_mac_only = self.export_mac_only_toggle.GetValue()
+        self.config["export_mac_only"] = self.export_mac_only
+        save_config(self.config)
+        self.update_export_toggle_label()
+
+    def restore_status_filter(self) -> None:
+        value = self.config.get("status_filter")
+        if value in ("全部", "成功", "失败"):
+            self.status_filter_value = value
+            self.status_filter.SetLabel(self.status_filter_label())
+
+    def status_filter_label(self) -> str:
+        return f"状态: {self.status_filter_value}"
+
+    def show_status_menu(self, _event: wx.CommandEvent) -> None:
+        menu = wx.Menu()
+        for choice in ("全部", "成功", "失败"):
+            item = menu.AppendRadioItem(wx.ID_ANY, choice)
+            if choice == self.status_filter_value:
+                item.Check(True)
+            self.Bind(
+                wx.EVT_MENU,
+                lambda event, value=choice: self.set_status_filter(value),
+                item,
+            )
+        self.PopupMenu(menu)
+        menu.Destroy()
+
+    def set_status_filter(self, value: str) -> None:
+        self.status_filter_value = value
+        self.status_filter.SetLabel(self.status_filter_label())
+        self.config["status_filter"] = self.status_filter_value
+        save_config(self.config)
+        self.apply_filters()
+
+    def update_export_toggle_label(self) -> None:
+        self.export_mac_only_toggle.SetLabel("仅导出 MAC")
+        if hasattr(self, "check_on_bmp"):
+            bmp = self.check_on_bmp if self.export_mac_only_toggle.GetValue() else self.check_off_bmp
+            self.export_mac_only_toggle.SetBitmap(bmp)
+            self.export_mac_only_toggle.SetBitmapPosition(wx.LEFT)
+
+    def init_custom_icons(self) -> None:
+        self.check_on_bmp = make_check_bitmap(14, True)
+        self.check_off_bmp = make_check_bitmap(14, False)
+        self.arrow_bmp = make_arrow_bitmap(12)
+        self.status_filter.SetBitmap(self.arrow_bmp)
+        self.status_filter.SetBitmapPosition(wx.RIGHT)
+        self.update_export_toggle_label()
+
+    def ensure_executor(self) -> None:
+        if self.executor is None:
+            self.executor = ThreadPoolExecutor(
+                max_workers=default_max_workers(),
+                thread_name_prefix="esp32-mac",
+            )
+
+    def on_close(self, event: wx.CloseEvent) -> None:
+        save_config(self.config)
+        self.Destroy()
 
     def Destroy(self) -> bool:  # noqa: N802
         if self.timer.IsRunning():
             self.timer.Stop()
-        self.executor.shutdown(wait=False)
+        if self.executor is not None:
+            self.executor.shutdown(wait=False)
         return super().Destroy()
 
 
@@ -336,6 +545,7 @@ def load_version() -> str:
 
 def main() -> None:
     version = load_version()
+    ensure_gtk_resources()
     app = wx.App()
     frame = MainFrame(version)
     frame.Show()
